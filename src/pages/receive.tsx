@@ -8,12 +8,21 @@ import Logo from '@/components/Logo';
 import { parseChunkPayload, reassembleFile } from '@/services/chunkService';
 import { formatFileSize } from '@/services/fileService';
 
+type ReceiveMode = 'camera' | 'manual';
+
 export default function ReceivePage() {
   const router = useRouter();
+
+  // Mode Selection: Camera vs Manual PIN
+  const [receiveMode, setReceiveMode] = useState<ReceiveMode>('camera');
 
   // App state
   const [cameraActive, setCameraActive] = useState(false);
   const [transferComplete, setTransferComplete] = useState(false);
+
+  // Manual PIN input state
+  const [manualPin, setManualPin] = useState('');
+  const [manualPayload, setManualPayload] = useState('');
 
   // Transfer state
   const [transferId, setTransferId] = useState<string | null>(null);
@@ -44,7 +53,6 @@ export default function ReceivePage() {
       setFileType(payload.m);
       setTotalChunks(payload.l);
     } else if (payload.t !== transferId) {
-      // Chunk belongs to another transfer ID
       setError(`QR is from transfer PIN ${payload.t}, expected ${transferId}`);
       return;
     }
@@ -54,7 +62,6 @@ export default function ReceivePage() {
       chunksMapRef.current.set(payload.c, payload.d);
       setLastScannedChunk(payload.c + 1);
 
-      // Light haptic feedback if supported
       if (typeof navigator !== 'undefined' && navigator.vibrate) {
         navigator.vibrate(25);
       }
@@ -68,6 +75,14 @@ export default function ReceivePage() {
     }
   };
 
+  const handleManualFrameSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualPayload.trim()) return;
+
+    handleScan(manualPayload.trim());
+    setManualPayload('');
+  };
+
   const finishTransfer = (total: number, mimeType: string) => {
     setCameraActive(false);
 
@@ -78,7 +93,6 @@ export default function ReceivePage() {
       setDownloadUrl(url);
       setTransferComplete(true);
 
-      // Haptic celebration
       if (typeof navigator !== 'undefined' && navigator.vibrate) {
         navigator.vibrate([100, 50, 150]);
       }
@@ -95,6 +109,8 @@ export default function ReceivePage() {
     setTotalChunks(0);
     setReceivedCount(0);
     setError(null);
+    setManualPin('');
+    setManualPayload('');
     chunksMapRef.current.clear();
     if (downloadUrl) URL.revokeObjectURL(downloadUrl);
   };
@@ -104,7 +120,6 @@ export default function ReceivePage() {
     router.push('/');
   };
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       chunksMapRef.current.clear();
@@ -126,18 +141,39 @@ export default function ReceivePage() {
         </button>
         <div className="header-logo-title">
           <Logo size="sm" showText={false} />
-          <h1>Receive File</h1>
+          <h1>Receive <span className="italic-emphasis">File</span></h1>
         </div>
         <div className="header-spacer"></div>
       </header>
 
-      <main className="main-content">
-        {/* Initial Prompt */}
-        {!cameraActive && !transferComplete && (
-          <div className="camera-prompt centered-content">
+      <main className="main-content centered-content">
+        {/* Mode Selector Tabs (Camera vs Manual PIN) */}
+        {!transferComplete && (
+          <div className="tab-switch-group">
+            <button
+              className={`tab-btn ${receiveMode === 'camera' ? 'active' : ''}`}
+              onClick={() => setReceiveMode('camera')}
+            >
+              📷 Optical Camera
+            </button>
+            <button
+              className={`tab-btn ${receiveMode === 'manual' ? 'active' : ''}`}
+              onClick={() => {
+                setReceiveMode('manual');
+                setCameraActive(false);
+              }}
+            >
+              🔢 Transfer PIN / Paste
+            </button>
+          </div>
+        )}
+
+        {/* 1. Camera Mode: Initial Prompt */}
+        {receiveMode === 'camera' && !cameraActive && !transferComplete && (
+          <div className="camera-prompt">
             <div className="scan-icon-circle">📷</div>
-            <h2>Ready to Scan</h2>
-            <p>Point your camera directly at the sender's QR code screen.</p>
+            <h2>Optical <span className="italic-emphasis">Scanner</span></h2>
+            <p>Point your camera directly at the sender's broadcast screen.</p>
             <button
               className="btn btn-primary btn-large"
               onClick={() => setCameraActive(true)}
@@ -148,8 +184,8 @@ export default function ReceivePage() {
           </div>
         )}
 
-        {/* Live Camera Scanner */}
-        {cameraActive && !transferComplete && (
+        {/* 1. Camera Mode: Active Scanner */}
+        {receiveMode === 'camera' && cameraActive && !transferComplete && (
           <div className="scanner-layout">
             <CameraScanner active={cameraActive} onScan={handleScan} />
 
@@ -162,12 +198,12 @@ export default function ReceivePage() {
                     </span>
                     <span className="badge badge-rate">
                       {remainingChunks === 0
-                        ? 'Assembling…'
+                        ? 'Reassembling…'
                         : `${remainingChunks} chunks remaining`}
                     </span>
                   </div>
 
-                  <p className="receiving-title">
+                  <p className="receiving-title font-serif">
                     Receiving: <strong>{fileName}</strong>
                   </p>
 
@@ -188,8 +224,8 @@ export default function ReceivePage() {
               ) : (
                 <div className="waiting-state">
                   <div className="pulsing-dot"></div>
-                  <p>Searching for FrameShare QR code…</p>
-                  <p className="subtitle">Hold your phone steady in front of the sender</p>
+                  <p className="font-serif">Searching for FrameShare stream…</p>
+                  <p className="subtitle">Aim camera steadily at the sender's screen</p>
                   {error && <p className="error-message">{error}</p>}
                 </div>
               )}
@@ -197,17 +233,63 @@ export default function ReceivePage() {
           </div>
         )}
 
-        {/* Complete State */}
+        {/* 2. Manual PIN / Input Mode */}
+        {receiveMode === 'manual' && !transferComplete && (
+          <div className="manual-pin-card">
+            <div className="scan-icon-circle">🔢</div>
+            <h2>Manual <span className="italic-emphasis">Collector</span></h2>
+            <p>Enter the 6-digit Transfer PIN to verify or paste single frame JSON.</p>
+
+            <input
+              type="text"
+              className="pin-input-field"
+              placeholder="582 914"
+              maxLength={7}
+              value={manualPin}
+              onChange={(e) => setManualPin(e.target.value)}
+            />
+
+            <form onSubmit={handleManualFrameSubmit} style={{ width: '100%', marginTop: '1rem' }}>
+              <input
+                type="text"
+                className="pin-input-field"
+                style={{ fontSize: '0.9rem', maxWidth: '100%', letterSpacing: 'normal' }}
+                placeholder='Paste raw frame payload {"app":"FS", ...}'
+                value={manualPayload}
+                onChange={(e) => setManualPayload(e.target.value)}
+              />
+              <div className="action-buttons">
+                <button type="submit" className="btn btn-primary">
+                  Add Frame Chunk
+                </button>
+              </div>
+            </form>
+
+            {transferId && (
+              <div style={{ marginTop: '1.5rem', textAlign: 'left' }}>
+                <ProgressBar
+                  current={receivedCount}
+                  total={totalChunks}
+                  label={`Collected ${receivedCount} of ${totalChunks} frames`}
+                />
+              </div>
+            )}
+
+            {error && <p className="error-message">{error}</p>}
+          </div>
+        )}
+
+        {/* 3. Transfer Complete State */}
         {transferComplete && downloadUrl && (
           <div className="transfer-complete centered-content">
             <div className="success-icon">✓</div>
-            <h2>Transfer Complete!</h2>
-            <p className="success-subtitle">File reassembled successfully from all {totalChunks} frames</p>
+            <h2>Transfer <span className="italic-emphasis">Complete!</span></h2>
+            <p className="success-subtitle">File reassembled seamlessly from all {totalChunks} frames</p>
 
             <div className="file-info-card success-card">
-              <span className="file-icon">📄</span>
+              <span className="file-icon">🌿</span>
               <div className="file-details">
-                <p className="file-name">{fileName}</p>
+                <p className="file-name font-serif">{fileName}</p>
                 <p className="file-size">{formatFileSize(reconstructedSize)}</p>
               </div>
             </div>

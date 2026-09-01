@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import FilePicker from '@/components/FilePicker';
 import Logo from '@/components/Logo';
+import { formatFileSize } from '@/services/fileService';
 
 export default function SendPage() {
   const router = useRouter();
@@ -24,12 +25,12 @@ export default function SendPage() {
         </button>
         <div className="header-logo-title">
           <Logo size="sm" showText={false} />
-          <h1>Send File</h1>
+          <h1>Send <span className="italic-emphasis">File</span></h1>
         </div>
         <div className="header-spacer"></div>
       </header>
 
-      <main className="main-content">
+      <main className="main-content centered-content">
         {!selectedFile ? (
           <FilePicker onFileSelect={setSelectedFile} />
         ) : (
@@ -37,8 +38,8 @@ export default function SendPage() {
             <div className="file-info-card">
               <span className="file-icon">📄</span>
               <div className="file-details">
-                <p className="file-name">{selectedFile.name}</p>
-                <p className="file-size">{(selectedFile.size / (1024 * 1024)).toFixed(2)} MB</p>
+                <p className="file-name font-serif">{selectedFile.name}</p>
+                <p className="file-size">{formatFileSize(selectedFile.size)}</p>
               </div>
             </div>
 
@@ -50,10 +51,10 @@ export default function SendPage() {
                 Change File
               </button>
               <button
-                className="btn btn-primary"
+                className="btn btn-primary btn-large"
                 onClick={handleStartTransfer}
               >
-                Start Transfer 
+                Start Optical Transfer →
               </button>
             </div>
           </div>

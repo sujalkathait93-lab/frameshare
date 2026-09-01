@@ -120,8 +120,8 @@ export default function TransferPage() {
       <div className="page-container centered-content">
         <div className="loading-card">
           <div className="spinner"></div>
-          <h2>Encoding File to Frames...</h2>
-          <p className="subtitle">Optimizing QR payload for maximum transfer speed</p>
+          <h2>Preparing <span className="italic-emphasis">Optical Frames...</span></h2>
+          <p className="subtitle">All chunks sliced and optimized for optical stream</p>
         </div>
       </div>
     );
@@ -138,7 +138,7 @@ export default function TransferPage() {
         </button>
         <div className="header-logo-title">
           <Logo size="sm" showText={false} />
-          <h1>Broadcasting Frames</h1>
+          <h1>Broadcasting <span className="italic-emphasis">Frames</span></h1>
         </div>
         <div className="header-spacer"></div>
       </header>
