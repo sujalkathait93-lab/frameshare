@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import CameraScanner from '@/components/CameraScanner';
 import ProgressBar from '@/components/ProgressBar';
+import Logo from '@/components/Logo';
 import { parseChunkPayload, reassembleFile } from '@/services/chunkService';
 import { formatFileSize } from '@/services/fileService';
 
@@ -123,7 +124,11 @@ export default function ReceivePage() {
         <button className="back-btn" onClick={handleCancel}>
           {transferComplete ? '← Home' : '✕ Cancel'}
         </button>
-        <h1>Receive File</h1>
+        <div className="header-logo-title">
+          <Logo size="sm" showText={false} />
+          <h1>Receive File</h1>
+        </div>
+        <div className="header-spacer"></div>
       </header>
 
       <main className="main-content">

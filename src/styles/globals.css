@@ -46,21 +46,84 @@ a {
   flex-direction: column;
 }
 
-/* Home */
+/* Hero & Brand Logo */
 .hero {
   text-align: center;
-  margin: 3.5rem 0 2.5rem;
+  margin: 2.5rem 0 2rem;
   animation: fadeIn 0.8s ease-out;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
-.logo {
-  font-size: 3.5rem;
+.hero-logo-wrapper {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 1.25rem;
+}
+
+.frameshare-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 1rem;
+  user-select: none;
+}
+
+.logo-lg .logo-text {
+  font-size: 3.25rem;
   font-weight: 800;
-  background: linear-gradient(135deg, #60a5fa, #c084fc);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  margin-bottom: 0.5rem;
+  letter-spacing: -1.5px;
+}
+
+.logo-md .logo-text {
+  font-size: 2rem;
+  font-weight: 800;
   letter-spacing: -1px;
+}
+
+.logo-sm .logo-text {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.logo-text-frame {
+  color: #ffffff;
+}
+
+.logo-text-share {
+  color: #0066FF;
+}
+
+.logo-icon-svg {
+  display: block;
+  flex-shrink: 0;
+}
+
+.protocol-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 1rem;
+  padding: 0.4rem 1rem;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  border-radius: 9999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #93c5fd;
+  letter-spacing: 0.3px;
+}
+
+.header-logo-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+  justify-content: center;
+}
+
+.header-spacer {
+  width: 75px;
 }
 
 .tagline {

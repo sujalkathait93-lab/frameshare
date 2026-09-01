@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import FilePicker from '@/components/FilePicker';
+import Logo from '@/components/Logo';
 
 export default function SendPage() {
   const router = useRouter();
@@ -11,10 +12,6 @@ export default function SendPage() {
   const handleStartTransfer = () => {
     if (!selectedFile) return;
 
-    // A hacky but effective way to pass the File object between Next.js pages
-    // without using a global store or context for V1.
-    // In a production app with Next.js app router, you'd likely use Zustand or Context.
-    // However, since we're using pages router, this is the simplest way.
     (window as any).frameShareSelectedFile = selectedFile;
     router.push('/transfer');
   };
@@ -25,7 +22,11 @@ export default function SendPage() {
         <button className="back-btn" onClick={() => router.push('/')}>
           ← Back
         </button>
-        <h1>Send File</h1>
+        <div className="header-logo-title">
+          <Logo size="sm" showText={false} />
+          <h1>Send File</h1>
+        </div>
+        <div className="header-spacer"></div>
       </header>
 
       <main className="main-content">

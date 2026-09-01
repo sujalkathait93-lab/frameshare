@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import QRDisplay from '@/components/QRDisplay';
 import ProgressBar from '@/components/ProgressBar';
+import Logo from '@/components/Logo';
 import { splitIntoChunks, createChunkPayload } from '@/services/chunkService';
 
 type TransferSpeed = 150 | 250 | 350 | 500;
@@ -135,7 +136,11 @@ export default function TransferPage() {
         <button className="back-btn" onClick={handleCancel}>
           ✕ Close Transfer
         </button>
-        <h1>Broadcasting Frames</h1>
+        <div className="header-logo-title">
+          <Logo size="sm" showText={false} />
+          <h1>Broadcasting Frames</h1>
+        </div>
+        <div className="header-spacer"></div>
       </header>
 
       <main className="main-content qr-transfer-screen">
