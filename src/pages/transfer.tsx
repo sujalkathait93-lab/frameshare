@@ -127,9 +127,16 @@ export default function TransferPage() {
         if (transferStatus !== 'TRANSFERRING') return prev;
 
         const next = prev + 1;
+        // 100% STOP GUARANTEE: Terminate chunk loop at the final chunk.
         if (next >= chunks.length) {
-          setLoopCount((l) => l + 1);
-          return 0;
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+          }
+          // The final chunk must be the final chunk. 
+          // Schedule state transition to COMPLETED cleanly outside the render cycle.
+          setTimeout(() => setTransferStatus('COMPLETED'), 0);
+          return prev;
         }
         return next;
       });
