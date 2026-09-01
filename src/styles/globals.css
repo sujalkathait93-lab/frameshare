@@ -950,3 +950,20 @@ h1, h2, h3, h4, .font-serif {
     transform: translateY(0);
   }
 }
+
+/* Hide Next.js Development Watermark / Devtools Button / Overlay */
+#__next-build-watcher,
+nextjs-portal,
+[data-nextjs-toast],
+[data-nextjs-dev-tools-button],
+[data-next-badge],
+div[data-nextjs-toast-wrapper],
+button[aria-label="Open Next.js DevTools"],
+#next-badge,
+div:has(> button[aria-label="Open Next.js DevTools"]) {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
