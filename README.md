@@ -1,209 +1,610 @@
-# 📡 FrameShare
+# FrameShare
 
-> **Share Files, Frame by Frame — 100% Offline via Optical QR Streams.**
+## Share Files, Frame by Frame
 
-FrameShare is a fully offline, air-gapped peer-to-peer file-sharing web application. It transfers files from one device to another using only **animated high-speed QR code streams** on screen and a **camera to scan them** — zero internet, zero Wi-Fi, zero Bluetooth, zero cables, and **zero server storage**.
+FrameShare is a browser-based, air-gapped peer-to-peer file-sharing application that transfers files between nearby devices using animated QR-code frames.
 
----
-
-## 🔒 Core Guarantees & Architecture
-
-### 1. 🛑 100% Means STOP — No Infinite Chunk Processing
-* When the transfer reaches 100% (final chunk $N/N$), chunk generation and transmission terminate **immediately and completely**.
-* No background retry loops, timers, or duplicate frame generators run after completion.
-
-### 2. 🔁 Instant Reuse / "Send Again"
-* After a completed or cancelled transfer, users can tap **`[ 🔁 Send Again ]`** to send the exact same selected file without picking it from disk again.
-* **Fresh Session Isolation:** "Send Again" creates a brand new `transferId` (6-digit PIN), resets progress cleanly to 0%, and never resumes from partial progress or leaks old session state.
-
-### 3. 🛡️ Complete Cancellation & Race Condition Protection
-* Cancelling at 1%, 50%, or 99% stops all camera feeds, chunk generation, and memory listeners instantly.
-* A cancelled transfer can never transition to `COMPLETED`.
-
-### 4. 🗄️ Zero Server Storage
-* **Zero Persistence:** No file contents, chunks, ArrayBuffers, or Blobs ever touch a server, database, or disk log.
-* **Client-Only Reassembly:** The receiver reconstructs files strictly in local browser memory (`Blob` + `URL.createObjectURL()`) and frees memory on session reset.
+The sender displays a sequence of QR codes on the screen, while the receiver uses a camera to capture and decode them. File data is transferred optically without using the Internet, Wi-Fi, Bluetooth, cloud storage, or a file-transfer server. Files are processed and reassembled locally in browser memory.
 
 ---
 
-## 🏗️ State Machine Lifecycle
+## Features
 
-FrameShare enforces a deterministic state machine for both the Broadcaster (Sender) and Scanner (Receiver):
+* Optical file transfer using animated QR codes
+* No Internet, Wi-Fi, Bluetooth, or cables required
+* No cloud or server-side file storage
+* Client-side chunk processing
+* In-memory file reassembly
+* 6-digit transfer PIN
+* Duplicate-chunk protection
+* Camera-based QR scanning
+* Manual payload input
+* Transfer cancellation at any stage
+* Immediate stop at 100% completion
+* Fresh session for every **Send Again**
+* Supports modern desktop and mobile browsers
+
+---
+
+## Architecture
+
+```text
+                 OPTICAL TRANSFER
+
+       Sender Device                    Receiver Device
+             │                                  │
+        Select File                        Start Camera
+             │                                  │
+             ▼                                  ▼
+      Read File in Memory                 QR Scanner
+             │                                  │
+             ▼                                  ▼
+       Chunk Engine                    Decode QR Frame
+             │                                  │
+             ▼                                  ▼
+       Base64 Payload                  Validate Payload
+             │                                  │
+             ▼                                  ▼
+       QR Canvas Renderer ─── LIGHT ──► Memory Map
+                                             │
+                                             ▼
+                                         Reassemble
+                                             │
+                                             ▼
+                                          Blob
+                                             │
+                                             ▼
+                                         Download
+```
+
+FrameShare does not require a server to store or relay the file.
+
+---
+
+# Transfer Lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> FILE_SELECTED: User Picks File
+
+    [*] --> FILE_SELECTED
+
     FILE_SELECTED --> INITIALIZING: Start Transfer
-    INITIALIZING --> TRANSFERRING: Chunks Prepared & PIN Generated
+    INITIALIZING --> TRANSFERRING: Session Ready
 
-    state TRANSFERRING {
-        [*] --> StreamingFrames
-        StreamingFrames --> FrameRotated: Next Chunk
-        FrameRotated --> StreamingFrames: Timer Tick
-    }
+    TRANSFERRING --> TRANSFERRING: Next Frame
+    TRANSFERRING --> VERIFYING: Final Chunk Reached
+    TRANSFERRING --> CANCELLED: User Cancels
 
-    TRANSFERRING --> CANCELLED: User Cancels (1%-99%)
-    TRANSFERRING --> VERIFYING: Final Chunk Reached (100%)
-    
-    VERIFYING --> COMPLETED: Integrity & Blob Verified
-    VERIFYING --> FAILED: Missing Chunks / Error
-    VERIFYING --> CANCELLED: Abort Signal
+    VERIFYING --> COMPLETED: Integrity Valid
+    VERIFYING --> FAILED: Missing/Invalid Chunks
+    VERIFYING --> CANCELLED: Abort
 
-    state CANCELLED {
-        [*] --> CancelledView
-        CancelledView --> INITIALIZING: [ 🔁 Send Again ] (0%, New PIN)
-        CancelledView --> FILE_SELECTED: [ 📁 Choose Another File ]
-    }
+    CANCELLED --> INITIALIZING: Send Again
+    CANCELLED --> FILE_SELECTED: Choose Another File
 
-    state COMPLETED {
-        [*] --> CompletedView
-        CompletedView --> INITIALIZING: [ 🔁 Send Again ] (0%, New PIN)
-        CompletedView --> FILE_SELECTED: [ 📁 Choose Another File ]
-    }
+    COMPLETED --> INITIALIZING: Send Again
+    COMPLETED --> FILE_SELECTED: Choose Another File
+
+    FAILED --> INITIALIZING: Retry
+```
+
+Each transfer has an isolated session and a clear terminal state:
+
+```text
+COMPLETED
+CANCELLED
+FAILED
 ```
 
 ---
 
-## 🔄 How It Works (End-to-End Optical Pipeline)
+# Core Transfer Rules
+
+## 1. Stop Immediately at 100%
+
+When all unique chunks have been received:
+
+```text
+receivedCount === totalChunks
+```
+
+the receiver enters the verification stage.
+
+The application must immediately:
+
+* Stop the QR scanning loop
+* Stop the camera
+* Stop frame generation
+* Stop scheduling new timers
+* Prevent additional frames from being processed
+* Reassemble the file
+* Create the final Blob
+* Provide the download action
+
+No transfer loop should continue after completion.
+
+---
+
+## 2. Send Again
+
+After a completed or cancelled transfer, the sender can select:
+
+```text
+Send Again
+```
+
+This creates a completely new session.
+
+```text
+Previous Session
+─────────────────
+PIN:      582914
+Progress: 100%
+State:    COMPLETED
+
+        ↓ Send Again
+
+New Session
+───────────
+PIN:      731205
+Progress: 0%
+State:    INITIALIZING
+```
+
+The new session must not reuse:
+
+* Previous transfer state
+* Partial chunks
+* Previous progress
+* Old timers
+* Old callbacks
+* Previous transfer ID
+
+The local file can be reused so the user does not need to select it again.
+
+---
+
+## 3. Complete Cancellation
+
+Cancellation must work at any point:
+
+```text
+1%  → CANCELLED
+50% → CANCELLED
+99% → CANCELLED
+```
+
+When the user cancels, the application must:
+
+* Set the transfer state to `CANCELLED`
+* Stop chunk generation
+* Stop QR rendering
+* Stop timers
+* Stop `requestAnimationFrame`
+* Stop the camera
+* Remove active listeners
+* Clear temporary transfer state
+* Ignore late asynchronous callbacks
+
+A cancelled session must never transition to `COMPLETED`.
+
+---
+
+# End-to-End Transfer
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor S as Sender User
-    participant SF as Sender UI (transfer.tsx)
-    participant CE as Chunk Engine (chunkService.ts)
-    participant QR as Canvas QR Renderer
-    actor R as Receiver User
-    participant RF as Receiver UI (receive.tsx)
-    participant CS as Camera Scanner (jsQR)
-    participant RS as Reassembly Engine
 
-    Note over S,SF: Phase 1: Local Slicing & PIN Generation
-    S->>SF: Selects local file (e.g. photo.jpg)
-    SF->>CE: splitIntoChunks(ArrayBuffer) in memory
-    CE-->>SF: Returns N chunks [c_0, c_1, ... c_N]
-    SF->>SF: Generates 6-Digit PIN (e.g. 582914)
+    actor S as Sender
+    participant UI as Sender UI
+    participant CE as Chunk Engine
+    participant QR as QR Renderer
+    actor R as Receiver
+    participant CAM as Camera
+    participant SC as QR Scanner
+    participant RA as Reassembly
 
-    Note over SF,CS: Phase 2: Rapid Optical Broadcast
-    R->>RF: Opens Camera Scanner (or Manual PIN)
-    RF->>CS: Starts requestAnimationFrame scanner
-    
-    loop Continuous Frame Streaming (150ms - 350ms)
-        SF->>QR: renderQRToCanvas(chunk_payload)
-        QR-->>SF: Renders QR directly to HTML5 Canvas
-        CS->>CS: Optical capture via Camera lens
-        CS->>RF: Decodes JSON payload {t, c, l, d}
-        RF->>RF: Rejects if payload.t != current PIN
-        RF->>RF: Stores unique chunk in Memory Map
+    S->>UI: Select file
+    UI->>CE: Split file into chunks
+    CE-->>UI: Return chunks
+    UI->>UI: Generate transfer PIN
+
+    R->>CAM: Start camera
+    CAM->>SC: Capture frames
+
+    loop Until final chunk
+        UI->>CE: Get next chunk
+        CE-->>UI: Chunk payload
+        UI->>QR: Render QR
+        QR-->>CAM: Optical frame
+        SC->>R: Decode payload
+        R->>R: Validate transfer ID
+        R->>R: Validate chunk index
+        R->>R: Ignore duplicates
+        R->>R: Store chunk
     end
 
-    Note over RF,RS: Phase 3: 100% Stop & Local Reassembly
-    RF->>RF: 100% Reached (receivedCount == totalChunks)
-    RF->>CS: Stops Camera stream & Frame loop
-    RF->>RS: reassembleFile(chunksMap, total, mimeType)
-    RS-->>RF: Creates in-memory Blob URL
-    RF-->>R: "Transfer Complete!" + Download button
+    R->>R: Detect 100%
+    R->>CAM: Stop camera
+    R->>SC: Stop scanner
+    R->>RA: Reassemble chunks
+    RA-->>R: Create Blob
+    R-->>R: Download file
 ```
 
 ---
 
-## 📦 Optical Protocol & QR Payload Schema
+# Optical Protocol
 
-Each QR code holds a lightweight, minified JSON packet designed to minimize QR density for instant optical recognition:
+Each QR frame contains a compact JSON payload.
 
-```mermaid
-classDiagram
-    class ChunkPayload {
-        +string app: "FS" (App Identifier)
-        +string t: "582914" (6-Digit Transfer PIN)
-        +string n: "document.pdf" (File Name)
-        +string m: "application/pdf" (MIME Type)
-        +number c: 47 (Zero-Based Chunk Index)
-        +number l: 652 (Total Chunks Count)
-        +string d: "aW1hZ2UgYmluYXJ5..." (Base64 Binary Slice)
-    }
+```json
+{
+  "app": "FS",
+  "t": "582914",
+  "n": "document.pdf",
+  "m": "application/pdf",
+  "c": 47,
+  "l": 652,
+  "d": "aW1hZ2UgYmluYXJ5..."
+}
+```
+
+| Field | Type   | Description               |
+| ----- | ------ | ------------------------- |
+| `app` | string | FrameShare identifier     |
+| `t`   | string | 6-digit transfer PIN      |
+| `n`   | string | File name                 |
+| `m`   | string | MIME type                 |
+| `c`   | number | Chunk index               |
+| `l`   | number | Total chunks              |
+| `d`   | string | Base64-encoded chunk data |
+
+Example:
+
+```text
+Chunk 0 / 652
+Chunk 1 / 652
+Chunk 2 / 652
+...
+Chunk 651 / 652
+```
+
+The receiver accepts frames only when the transfer PIN matches the current session.
+
+---
+
+# Duplicate Chunk Protection
+
+A camera may decode the same QR frame multiple times.
+
+Therefore, chunks are stored using their index rather than simply appended.
+
+```text
+Map<chunkIndex, Uint8Array>
+```
+
+For example:
+
+```text
+Received:
+47
+47
+47
+47
+
+Stored:
+47
+```
+
+Only unique chunks contribute to the transfer progress.
+
+---
+
+# Cancellation and Race Conditions
+
+Browser operations such as timers, camera callbacks, and `requestAnimationFrame` may execute asynchronously.
+
+For example:
+
+```text
+Timer scheduled
+      ↓
+User clicks Cancel
+      ↓
+State = CANCELLED
+      ↓
+Old callback executes
+```
+
+The old callback must not restart or continue the transfer.
+
+Every asynchronous operation should verify that:
+
+```text
+Current session is active
+AND
+Transfer has not been cancelled
+AND
+Session ID is still valid
+```
+
+This prevents stale callbacks from affecting a new **Send Again** session.
+
+---
+
+# Local Memory Processing
+
+File processing occurs locally in the browser:
+
+```text
+File
+ ↓
+ArrayBuffer
+ ↓
+Chunks
+ ↓
+Base64 Payload
+ ↓
+QR Frame
+```
+
+On the receiver:
+
+```text
+QR Frame
+ ↓
+Decoded Payload
+ ↓
+Validated Chunk
+ ↓
+Memory Map
+ ↓
+Reassembly
+ ↓
+Blob
+ ↓
+Object URL
+ ↓
+Download
+```
+
+Temporary resources should be released when a session ends.
+
+```javascript
+URL.revokeObjectURL(objectUrl);
 ```
 
 ---
 
-## ⚡ Speed Modes & Controls
+# Speed Modes
 
-| Mode | Frame Interval | Effective FPS | Recommendation |
-| :--- | :--- | :--- | :--- |
-| **⚡ Turbo** | `150ms` | ~6.6 FPS | Modern smartphones & high-res cameras |
-| **Fast** *(Default)* | `250ms` | 4.0 FPS | General high-speed transfers |
-| **Normal** | `350ms` | ~2.8 FPS | Standard scanning speed |
-| **Slow** | `500ms` | 2.0 FPS | Low-light environments & older cameras |
+| Mode   | Frame Interval | Approx. FPS | Recommended Use                |
+| ------ | -------------: | ----------: | ------------------------------ |
+| Turbo  |         150 ms |     6.7 FPS | Modern devices / good lighting |
+| Fast   |         250 ms |     4.0 FPS | General use                    |
+| Normal |         350 ms |     2.9 FPS | Standard conditions            |
+| Slow   |         500 ms |     2.0 FPS | Low light / slower cameras     |
 
----
-
-## 📁 Supported Files
-
-| Type  | Extensions            | Max Size |
-| ----- | --------------------- | -------- |
-| Text  | `.txt`                | 20 MB    |
-| Image | `.jpg` `.jpeg` `.png` | 20 MB    |
+Actual transfer speed depends on QR size, camera quality, lighting, display resolution, autofocus, and successful frame decoding.
 
 ---
 
-## 🛠️ Tech Stack
+# Supported Files
 
-| Layer       | Technology                              |
-| ----------- | --------------------------------------- |
-| Framework   | Next.js (Pages Router, Static Export)   |
-| Language    | TypeScript                              |
-| Styling     | Botanical / Organic Serif (Vanilla CSS) |
-| QR Generate | `qrcode` (Direct HTML5 Canvas Render)   |
-| QR Scan     | `jsQR` via `requestAnimationFrame`      |
-| Camera API  | `navigator.mediaDevices.getUserMedia()` |
-| Memory I/O  | File API, FileReader, Blob              |
+| Type  | Extensions              | Maximum Size |
+| ----- | ----------------------- | -----------: |
+| Text  | `.txt`                  |        20 MB |
+| Image | `.jpg`, `.jpeg`, `.png` |        20 MB |
+
+These limits are intentionally conservative because optical QR transfer is slower than conventional network-based transfer.
 
 ---
 
-## ⚡ Quick Start
+# Technology Stack
 
-### 1. Prerequisites
-- [Node.js](https://nodejs.org/) 18+
-- npm or yarn
+| Layer           | Technology                  |
+| --------------- | --------------------------- |
+| Framework       | Next.js                     |
+| Router          | Pages Router                |
+| Language        | TypeScript                  |
+| UI              | React                       |
+| Styling         | Vanilla CSS                 |
+| QR Generation   | `qrcode`                    |
+| QR Scanning     | `jsQR`                      |
+| Camera          | `getUserMedia()`            |
+| File Processing | File API, ArrayBuffer, Blob |
+| Animation       | `requestAnimationFrame`     |
+| Deployment      | Static Export               |
 
-### 2. Install & Run Development Server
+---
+
+# Project Structure
+
+```text
+frameshare/
+│
+├── components/
+│   ├── QRDisplay.tsx
+│   ├── QRScanner.tsx
+│   ├── TransferProgress.tsx
+│   └── FilePicker.tsx
+│
+├── pages/
+│   ├── index.tsx
+│   ├── transfer.tsx
+│   └── receive.tsx
+│
+├── services/
+│   ├── chunkService.ts
+│   ├── transferService.ts
+│   ├── qrService.ts
+│   └── reassemblyService.ts
+│
+├── utils/
+│   ├── transferId.ts
+│   ├── validation.ts
+│   └── memory.ts
+│
+├── styles/
+│   └── globals.css
+│
+├── public/
+├── package.json
+├── next.config.js
+├── tsconfig.json
+└── README.md
+```
+
+---
+
+# Quick Start
+
+## Prerequisites
+
+* Node.js 18+
+* npm or Yarn
+* Modern browser with camera support
+
+## Clone
+
 ```bash
-# Clone the repository
 git clone https://github.com/sujalkathait93-lab/frameshare.git
 cd frameshare
+```
 
-# Install dependencies
+## Install
+
+```bash
 npm install
+```
 
-# Start local server
+## Run
+
+```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser.
+Open:
 
-### 3. Build for Production
+```text
+http://localhost:3000
+```
+
+## Build
+
 ```bash
 npm run build
 ```
 
 ---
 
-## 📱 Usage Guide
+# Usage
 
-### 📤 Sender Flow (Device A)
-1. Tap **Send File** and select a file (`.txt`, `.jpg`, `.jpeg`, `.png`).
-2. Tap **Start Optical Transfer →**.
-3. Point the streaming QR code toward the receiver.
-4. If cancelled or completed, tap **`[ 🔁 Send Again ]`** to start a fresh transfer session with the same file.
+## Sender
 
-### 📥 Receiver Flow (Device B)
-1. Tap **Receive File**.
-2. **Optical Mode:** Tap **Start Camera Scanner** and point at Device A.
-3. **Manual Mode:** Switch to **Transfer PIN / Paste** tab to enter the 6-digit PIN or paste frame payloads.
-4. When 100% is reached, tap **`[ 💾 Save / Download File ]`**.
+1. Open FrameShare.
+2. Select **Send File**.
+3. Choose a supported file.
+4. Start the optical transfer.
+5. A new 6-digit PIN is generated.
+6. Point the sender's display toward the receiver's camera.
+7. Keep the QR stream visible.
+8. The transfer stops automatically when all chunks are received.
+
+After completion or cancellation, use **Send Again** to create a fresh transfer session.
+
+## Receiver
+
+1. Open FrameShare.
+2. Select **Receive File**.
+3. Start the camera scanner.
+4. Point the camera at the sender's QR stream.
+5. Frames are decoded and validated.
+6. Duplicate chunks are ignored.
+7. Progress is calculated from unique chunks.
+8. At 100%, scanning stops.
+9. The file is reassembled locally.
+10. Select **Save / Download File**.
 
 ---
 
-## 📄 License
+# Security
 
-Open-source educational and practical air-gap transfer software. Zero server storage guaranteed.
+FrameShare does not send file contents to a cloud storage service or file-transfer server.
+
+However, the QR stream is visible to anyone who can see the sender's screen.
+
+The 6-digit transfer PIN provides **session identification**, not encryption.
+
+For stronger confidentiality, client-side encryption should be added before the file is divided into chunks.
+
+All received payloads should also be validated for:
+
+* Transfer ID
+* Chunk index
+* Total chunk count
+* Payload size
+* MIME type
+* Malformed data
+
+---
+
+# Limitations
+
+QR-based optical transfer has several practical limitations:
+
+* Slower than Wi-Fi, USB, Bluetooth, or WebRTC
+* Large files require many QR frames
+* Poor lighting can reduce decoding accuracy
+* Camera autofocus affects reliability
+* Sender and receiver must maintain visual alignment
+* Browser camera permissions are required
+* Camera access depends on browser security requirements
+
+---
+
+# Design Principles
+
+FrameShare is built around five principles:
+
+```text
+1. Local First
+2. No File Server
+3. Isolated Transfer Sessions
+4. Immediate Cancellation
+5. Stop Exactly at Completion
+```
+
+The transfer engine must not continue running after a session reaches a terminal state.
+
+---
+
+# Development Checklist
+
+* [ ] New transfer ID for every session
+* [ ] Progress starts at 0%
+* [ ] Duplicate chunks are ignored
+* [ ] Invalid payloads are rejected
+* [ ] Sender stops at the final chunk
+* [ ] Receiver stops scanning at 100%
+* [ ] Camera tracks are stopped
+* [ ] Timers are cleared
+* [ ] Animation frames are cancelled
+* [ ] Cancellation works at any progress
+* [ ] Cancelled sessions cannot become completed
+* [ ] Old callbacks cannot modify new sessions
+* [ ] Send Again resets progress
+* [ ] Send Again generates a new transfer ID
+* [ ] Partial chunks are not reused
+* [ ] Object URLs are revoked
+* [ ] Temporary memory is released
+* [ ] File contents remain local
+* [ ] Reassembled file matches the original
+
+---
+
+# License
+
+FrameShare is open-source educational and practical software demonstrating browser-based optical data transfer and air-gapped file-sharing concepts.
