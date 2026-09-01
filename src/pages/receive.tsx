@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import CameraScanner from '@/components/CameraScanner';
 import ProgressBar from '@/components/ProgressBar';
@@ -9,22 +9,20 @@ import { parseChunkPayload, reassembleFile } from '@/services/chunkService';
 import { formatFileSize } from '@/services/fileService';
 
 type ReceiveMode = 'camera' | 'manual';
+type ReceiverStatus = 'IDLE' | 'CONNECTING' | 'TRANSFERRING' | 'VERIFYING' | 'COMPLETED' | 'CANCELLED' | 'FAILED';
 
 export default function ReceivePage() {
   const router = useRouter();
 
-  // Mode Selection: Camera vs Manual PIN
+  // Mode Selection: Optical Camera vs Manual PIN
   const [receiveMode, setReceiveMode] = useState<ReceiveMode>('camera');
-
-  // App state
-  const [cameraActive, setCameraActive] = useState(false);
-  const [transferComplete, setTransferComplete] = useState(false);
+  const [receiverStatus, setReceiverStatus] = useState<ReceiverStatus>('IDLE');
 
   // Manual PIN input state
   const [manualPin, setManualPin] = useState('');
   const [manualPayload, setManualPayload] = useState('');
 
-  // Transfer state
+  // Transfer metadata (Session Specific)
   const [transferId, setTransferId] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string>('');
   const [fileType, setFileType] = useState<string>('');
@@ -33,31 +31,78 @@ export default function ReceivePage() {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [reconstructedSize, setReconstructedSize] = useState<number>(0);
 
-  // Memory store for chunks: Map<chunkNumber, chunkData>
+  // In-memory store for binary chunks: Map<chunkNumber, base64Data>
   const chunksMapRef = useRef<Map<number, string>>(new Map());
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  // State for UI rendering
+  // Real-time progress states
   const [receivedCount, setReceivedCount] = useState(0);
   const [lastScannedChunk, setLastScannedChunk] = useState<number | null>(null);
 
-  const handleScan = (qrData: string) => {
-    if (transferComplete) return;
+  /**
+   * Finishes the transfer when 100% is reached.
+   * Stops all camera scanning and reassembles the local binary Blob.
+   */
+  const finishTransfer = useCallback((total: number, mimeType: string) => {
+    // 1. Race condition guard
+    if (abortControllerRef.current?.signal.aborted) return;
+
+    // 2. Transition to VERIFYING (No more chunks accepted)
+    setReceiverStatus('VERIFYING');
+
+    try {
+      // 3. Reconstruct the local file in browser memory
+      const blob = reassembleFile(chunksMapRef.current, total, mimeType);
+      setReconstructedSize(blob.size);
+
+      const url = URL.createObjectURL(blob);
+      setDownloadUrl(url);
+
+      // 4. Transition to COMPLETED
+      setReceiverStatus('COMPLETED');
+
+      // 5. Haptic feedback
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        navigator.vibrate([100, 50, 150]);
+      }
+    } catch (err) {
+      setError('Failed to reconstruct file. Some pieces might be corrupted.');
+      setReceiverStatus('FAILED');
+    }
+  }, []);
+
+  /**
+   * Handles incoming decoded QR payload strings.
+   * Enforces session isolation, duplicate filtering, and 100% stop.
+   */
+  const handleScan = useCallback((qrData: string) => {
+    // 1. Never process chunks after COMPLETED, CANCELLED, or FAILED
+    if (receiverStatus === 'COMPLETED' || receiverStatus === 'CANCELLED' || receiverStatus === 'FAILED' || receiverStatus === 'VERIFYING') {
+      return;
+    }
+
+    if (abortControllerRef.current?.signal.aborted) {
+      return;
+    }
 
     const payload = parseChunkPayload(qrData);
     if (!payload) return;
 
-    // First chunk received for this transfer
+    // 2. First chunk received: Initialize session parameters
     if (!transferId) {
       setTransferId(payload.t);
       setFileName(payload.n);
       setFileType(payload.m);
       setTotalChunks(payload.l);
-    } else if (payload.t !== transferId) {
-      setError(`QR is from transfer PIN ${payload.t}, expected ${transferId}`);
+      setReceiverStatus('TRANSFERRING');
+    } 
+    // 3. Old Session Protection: Reject chunks from another transfer ID
+    else if (payload.t !== transferId) {
+      setError(`Ignored frame from PIN ${payload.t} (Expected ${transferId})`);
       return;
     }
 
-    // Store chunk if new
+    // 4. Store unique chunk in memory
     if (!chunksMapRef.current.has(payload.c)) {
       chunksMapRef.current.set(payload.c, payload.d);
       setLastScannedChunk(payload.c + 1);
@@ -69,11 +114,12 @@ export default function ReceivePage() {
       const newCount = chunksMapRef.current.size;
       setReceivedCount(newCount);
 
+      // 5. FINAL CHUNK (100% REACHED) -> STOP LOOP IMMEDIATELY
       if (newCount === payload.l) {
         finishTransfer(payload.l, payload.m);
       }
     }
-  };
+  }, [transferId, receiverStatus, finishTransfer]);
 
   const handleManualFrameSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -83,45 +129,51 @@ export default function ReceivePage() {
     setManualPayload('');
   };
 
-  const finishTransfer = (total: number, mimeType: string) => {
-    setCameraActive(false);
-
-    try {
-      const blob = reassembleFile(chunksMapRef.current, total, mimeType);
-      setReconstructedSize(blob.size);
-      const url = URL.createObjectURL(blob);
-      setDownloadUrl(url);
-      setTransferComplete(true);
-
-      if (typeof navigator !== 'undefined' && navigator.vibrate) {
-        navigator.vibrate([100, 50, 150]);
-      }
-    } catch (err) {
-      setError('Failed to reconstruct file. Some pieces might be corrupted.');
+  /**
+   * Completely cancels the transfer immediately.
+   * Stops camera streams, clears memory chunks, and transitions to CANCELLED.
+   */
+  const handleCancel = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
     }
+    chunksMapRef.current.clear();
+    setReceiverStatus('CANCELLED');
   };
 
-  const handleReset = () => {
-    setCameraActive(false);
-    setTransferComplete(false);
+  /**
+   * Starts a fresh receiving session from 0%.
+   */
+  const handleReceiveAgain = () => {
+    chunksMapRef.current.clear();
+    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+
+    setDownloadUrl(null);
     setTransferId(null);
     setFileName('');
     setTotalChunks(0);
     setReceivedCount(0);
+    setLastScannedChunk(null);
     setError(null);
     setManualPin('');
     setManualPayload('');
-    chunksMapRef.current.clear();
-    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+
+    abortControllerRef.current = new AbortController();
+    setReceiverStatus('IDLE');
   };
 
-  const handleCancel = () => {
-    handleReset();
+  const handleBackToHome = () => {
+    handleCancel();
+    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
     router.push('/');
   };
 
+  // Cleanup on unmount
   useEffect(() => {
+    abortControllerRef.current = new AbortController();
+
     return () => {
+      if (abortControllerRef.current) abortControllerRef.current.abort();
       chunksMapRef.current.clear();
       if (downloadUrl) URL.revokeObjectURL(downloadUrl);
     };
@@ -132,12 +184,13 @@ export default function ReceivePage() {
     : null;
 
   const remainingChunks = totalChunks > 0 ? totalChunks - receivedCount : 0;
+  const isCameraScanning = receiveMode === 'camera' && (receiverStatus === 'CONNECTING' || receiverStatus === 'TRANSFERRING');
 
   return (
     <div className="page-container">
       <header className="header">
-        <button className="back-btn" onClick={handleCancel}>
-          {transferComplete ? '← Home' : '✕ Cancel'}
+        <button className="back-btn" onClick={receiverStatus === 'COMPLETED' ? handleBackToHome : handleCancel}>
+          {receiverStatus === 'COMPLETED' ? '← Home' : '✕ Cancel'}
         </button>
         <div className="header-logo-title">
           <Logo size="sm" showText={false} />
@@ -147,21 +200,21 @@ export default function ReceivePage() {
       </header>
 
       <main className="main-content centered-content">
-        {/* Mode Selector Tabs (Camera vs Manual PIN) */}
-        {!transferComplete && (
+        {/* Mode Selector Tabs */}
+        {receiverStatus !== 'COMPLETED' && receiverStatus !== 'CANCELLED' && (
           <div className="tab-switch-group">
             <button
               className={`tab-btn ${receiveMode === 'camera' ? 'active' : ''}`}
-              onClick={() => setReceiveMode('camera')}
+              onClick={() => {
+                setReceiveMode('camera');
+                if (receiverStatus === 'IDLE') setReceiverStatus('CONNECTING');
+              }}
             >
               📷 Optical Camera
             </button>
             <button
               className={`tab-btn ${receiveMode === 'manual' ? 'active' : ''}`}
-              onClick={() => {
-                setReceiveMode('manual');
-                setCameraActive(false);
-              }}
+              onClick={() => setReceiveMode('manual')}
             >
               🔢 Transfer PIN / Paste
             </button>
@@ -169,14 +222,14 @@ export default function ReceivePage() {
         )}
 
         {/* 1. Camera Mode: Initial Prompt */}
-        {receiveMode === 'camera' && !cameraActive && !transferComplete && (
+        {receiveMode === 'camera' && receiverStatus === 'IDLE' && (
           <div className="camera-prompt">
             <div className="scan-icon-circle">📷</div>
             <h2>Optical <span className="italic-emphasis">Scanner</span></h2>
             <p>Point your camera directly at the sender's broadcast screen.</p>
             <button
               className="btn btn-primary btn-large"
-              onClick={() => setCameraActive(true)}
+              onClick={() => setReceiverStatus('CONNECTING')}
             >
               Start Camera Scanner
             </button>
@@ -185,9 +238,9 @@ export default function ReceivePage() {
         )}
 
         {/* 1. Camera Mode: Active Scanner */}
-        {receiveMode === 'camera' && cameraActive && !transferComplete && (
+        {isCameraScanning && (
           <div className="scanner-layout">
-            <CameraScanner active={cameraActive} onScan={handleScan} />
+            <CameraScanner active={isCameraScanning} onScan={handleScan} />
 
             <div className="transfer-info receiver-info">
               {transferId ? (
@@ -234,11 +287,11 @@ export default function ReceivePage() {
         )}
 
         {/* 2. Manual PIN / Input Mode */}
-        {receiveMode === 'manual' && !transferComplete && (
+        {receiveMode === 'manual' && receiverStatus !== 'COMPLETED' && receiverStatus !== 'CANCELLED' && (
           <div className="manual-pin-card">
             <div className="scan-icon-circle">🔢</div>
             <h2>Manual <span className="italic-emphasis">Collector</span></h2>
-            <p>Enter the 6-digit Transfer PIN to verify or paste single frame JSON.</p>
+            <p>Enter the 6-digit Transfer PIN or paste single frame JSON.</p>
 
             <input
               type="text"
@@ -279,12 +332,41 @@ export default function ReceivePage() {
           </div>
         )}
 
-        {/* 3. Transfer Complete State */}
-        {transferComplete && downloadUrl && (
+        {/* 3. Cancelled State (With Receive Again option) */}
+        {receiverStatus === 'CANCELLED' && (
+          <div className="loading-card" style={{ borderColor: 'var(--accent-terracotta)' }}>
+            <div className="scan-icon-circle" style={{ color: 'var(--accent-terracotta)' }}>✕</div>
+            <h2>Receiver <span className="italic-emphasis">Cancelled</span></h2>
+            <p className="subtitle" style={{ marginBottom: '2rem' }}>
+              Scanning stopped immediately. All partial chunk memory was cleared.
+            </p>
+
+            <div className="action-buttons full-width">
+              <button className="btn btn-primary btn-large" onClick={handleReceiveAgain}>
+                🔁 Receive Again (New Session)
+              </button>
+              <button className="btn btn-secondary" onClick={handleBackToHome}>
+                ← Back to Home
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 4. Verifying State */}
+        {receiverStatus === 'VERIFYING' && (
+          <div className="loading-card">
+            <div className="spinner"></div>
+            <h2>Verifying <span className="italic-emphasis">100% Chunks...</span></h2>
+            <p className="subtitle">All frames received. Reconstructing local file Blob.</p>
+          </div>
+        )}
+
+        {/* 5. Transfer Complete State */}
+        {receiverStatus === 'COMPLETED' && downloadUrl && (
           <div className="transfer-complete centered-content">
             <div className="success-icon">✓</div>
             <h2>Transfer <span className="italic-emphasis">Complete!</span></h2>
-            <p className="success-subtitle">File reassembled seamlessly from all {totalChunks} frames</p>
+            <p className="success-subtitle">100% of chunks collected. Zero data stored on server.</p>
 
             <div className="file-info-card success-card">
               <span className="file-icon">🌿</span>
@@ -304,7 +386,7 @@ export default function ReceivePage() {
               </a>
               <button
                 className="btn btn-secondary btn-large"
-                onClick={handleReset}
+                onClick={handleReceiveAgain}
               >
                 📥 Receive Another File
               </button>

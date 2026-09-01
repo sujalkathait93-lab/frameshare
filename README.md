@@ -2,139 +2,138 @@
 
 > **Share Files, Frame by Frame — 100% Offline via Optical QR Streams.**
 
-FrameShare is a fully offline, air-gapped peer-to-peer file-sharing web application. It transfers files from one device to another using only **animated high-speed QR code streams** on screen and a **camera to scan them** — zero internet, zero Wi-Fi, zero Bluetooth, zero cables, and zero servers.
+FrameShare is a fully offline, air-gapped peer-to-peer file-sharing web application. It transfers files from one device to another using only **animated high-speed QR code streams** on screen and a **camera to scan them** — zero internet, zero Wi-Fi, zero Bluetooth, zero cables, and **zero server storage**.
 
 ---
 
-## 🏗️ System Architecture
+## 🔒 Core Guarantees & Architecture
 
-FrameShare operates entirely client-side inside the browser using modern HTML5 Web APIs and an optical transfer pipeline:
+### 1. 🛑 100% Means STOP — No Infinite Chunk Processing
+* When the transfer reaches 100% (final chunk $N/N$), chunk generation and transmission terminate **immediately and completely**.
+* No background retry loops, timers, or duplicate frame generators run after completion.
+
+### 2. 🔁 Instant Reuse / "Send Again"
+* After a completed or cancelled transfer, users can tap **`[ 🔁 Send Again ]`** to send the exact same selected file without picking it from disk again.
+* **Fresh Session Isolation:** "Send Again" creates a brand new `transferId` (6-digit PIN), resets progress cleanly to 0%, and never resumes from partial progress or leaks old session state.
+
+### 3. 🛡️ Complete Cancellation & Race Condition Protection
+* Cancelling at 1%, 50%, or 99% stops all camera feeds, chunk generation, and memory listeners instantly.
+* A cancelled transfer can never transition to `COMPLETED`.
+
+### 4. 🗄️ Zero Server Storage
+* **Zero Persistence:** No file contents, chunks, ArrayBuffers, or Blobs ever touch a server, database, or disk log.
+* **Client-Only Reassembly:** The receiver reconstructs files strictly in local browser memory (`Blob` + `URL.createObjectURL()`) and frees memory on session reset.
+
+---
+
+## 🏗️ State Machine Lifecycle
+
+FrameShare enforces a deterministic state machine for both the Broadcaster (Sender) and Scanner (Receiver):
 
 ```mermaid
-flowchart TB
-    subgraph Sender_Device["📱 SENDER DEVICE"]
-        direction TB
-        A["📄 File Input (FilePicker)"] --> B["⚙️ Chunking Engine (ArrayBuffer)"]
-        B --> C["📦 JSON Payload Generator"]
-        C --> D["⚡ Canvas QR Renderer (QRCode.toCanvas)"]
-        D --> E["🖥️ Rapid Screen Display (2-7 FPS)"]
-    end
+stateDiagram-v2
+    [*] --> FILE_SELECTED: User Picks File
+    FILE_SELECTED --> INITIALIZING: Start Transfer
+    INITIALIZING --> TRANSFERRING: Chunks Prepared & PIN Generated
 
-    subgraph Optical_Channel["📷 OPTICAL AIR-GAP CHANNEL"]
-        direction LR
-        E -. "Photons / Light Wave Stream" .-> F["🔍 Device Camera Lens"]
-    end
+    state TRANSFERRING {
+        [*] --> StreamingFrames
+        StreamingFrames --> FrameRotated: Next Chunk
+        FrameRotated --> StreamingFrames: Timer Tick
+    }
 
-    subgraph Receiver_Device["📱 RECEIVER DEVICE"]
-        direction TB
-        F --> G["🎥 Video Stream (getUserMedia)"]
-        G --> H["🔬 QR Decoder (jsQR Loop)"]
-        H --> I["🗄️ Chunk Deduplication Map (Memory)"]
-        I -->|Missing Chunks?| G
-        I -->|All Frames Collected| J["🧩 Binary Reassembler (Blob)"]
-        J --> K["💾 Downloadable File (URL.createObjectURL)"]
-    end
+    TRANSFERRING --> CANCELLED: User Cancels (1%-99%)
+    TRANSFERRING --> VERIFYING: Final Chunk Reached (100%)
+    
+    VERIFYING --> COMPLETED: Integrity & Blob Verified
+    VERIFYING --> FAILED: Missing Chunks / Error
+    VERIFYING --> CANCELLED: Abort Signal
 
-    style Sender_Device fill:#0f172a,stroke:#3b82f6,stroke-width:2px,color:#fff
-    style Optical_Channel fill:#1e1b4b,stroke:#8b5cf6,stroke-width:2px,stroke-dasharray: 5 5,color:#fff
-    style Receiver_Device fill:#0f172a,stroke:#10b981,stroke-width:2px,color:#fff
+    state CANCELLED {
+        [*] --> CancelledView
+        CancelledView --> INITIALIZING: [ 🔁 Send Again ] (0%, New PIN)
+        CancelledView --> FILE_SELECTED: [ 📁 Choose Another File ]
+    }
+
+    state COMPLETED {
+        [*] --> CompletedView
+        CompletedView --> INITIALIZING: [ 🔁 Send Again ] (0%, New PIN)
+        CompletedView --> FILE_SELECTED: [ 📁 Choose Another File ]
+    }
 ```
 
 ---
 
-## 🔄 How It Works (End-to-End Sequence)
-
-The transfer lifecycle is divided into 4 phases: **Chunking**, **Optical Broadcast**, **Continuous Capture**, and **Reassembly**:
+## 🔄 How It Works (End-to-End Optical Pipeline)
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor S as Sender User
     participant SF as Sender UI (transfer.tsx)
-    participant CE as Chunk Service
+    participant CE as Chunk Engine (chunkService.ts)
     participant QR as Canvas QR Renderer
     actor R as Receiver User
     participant RF as Receiver UI (receive.tsx)
     participant CS as Camera Scanner (jsQR)
     participant RS as Reassembly Engine
 
-    Note over S,SF: Phase 1: Selection & Chunking
-    S->>SF: Selects file (e.g. photo.jpg, 500 KB)
-    SF->>CE: splitIntoChunks(ArrayBuffer)
-    CE-->>SF: Returns chunks array [c_0, c_1, ... c_N]
+    Note over S,SF: Phase 1: Local Slicing & PIN Generation
+    S->>SF: Selects local file (e.g. photo.jpg)
+    SF->>CE: splitIntoChunks(ArrayBuffer) in memory
+    CE-->>SF: Returns N chunks [c_0, c_1, ... c_N]
     SF->>SF: Generates 6-Digit PIN (e.g. 582914)
 
-    Note over SF,CS: Phase 2: Optical Broadcast & Scanning
-    R->>RF: Opens Camera Scanner
+    Note over SF,CS: Phase 2: Rapid Optical Broadcast
+    R->>RF: Opens Camera Scanner (or Manual PIN)
     RF->>CS: Starts requestAnimationFrame scanner
     
     loop Continuous Frame Streaming (150ms - 350ms)
         SF->>QR: renderQRToCanvas(chunk_payload)
-        QR-->>SF: Displays QR on screen
-        CS->>CS: Optical capture via Camera
+        QR-->>SF: Renders QR directly to HTML5 Canvas
+        CS->>CS: Optical capture via Camera lens
         CS->>RF: Decodes JSON payload {t, c, l, d}
+        RF->>RF: Rejects if payload.t != current PIN
         RF->>RF: Stores unique chunk in Memory Map
     end
 
-    Note over RF,RS: Phase 3: Completion & Download
-    RF->>RF: Verifies receivedCount == totalChunks
+    Note over RF,RS: Phase 3: 100% Stop & Local Reassembly
+    RF->>RF: 100% Reached (receivedCount == totalChunks)
+    RF->>CS: Stops Camera stream & Frame loop
     RF->>RS: reassembleFile(chunksMap, total, mimeType)
-    RS-->>RF: Creates Blob and ObjectURL
-    RF-->>R: Haptic Vibration + "Transfer Complete!"
-    R->>RF: Clicks "Download File"
+    RS-->>RF: Creates in-memory Blob URL
+    RF-->>R: "Transfer Complete!" + Download button
 ```
 
 ---
 
-## 📦 Optical Protocol & QR Payload Structure
+## 📦 Optical Protocol & QR Payload Schema
 
-Each QR code contains a lightweight, minified JSON packet designed to maximize payload capacity while minimizing QR code density for lightning-fast camera recognition:
+Each QR code holds a lightweight, minified JSON packet designed to minimize QR density for instant optical recognition:
 
 ```mermaid
 classDiagram
     class ChunkPayload {
-        +string app: "FS"
+        +string app: "FS" (App Identifier)
         +string t: "582914" (6-Digit Transfer PIN)
         +string n: "document.pdf" (File Name)
         +string m: "application/pdf" (MIME Type)
-        +number c: 47 (Current Chunk Index)
+        +number c: 47 (Zero-Based Chunk Index)
         +number l: 652 (Total Chunks Count)
         +string d: "aW1hZ2UgYmluYXJ5..." (Base64 Binary Slice)
     }
 ```
 
-### Packet Field Reference:
-- **`app`**: Application identifier (`"FS"` for FrameShare) to ignore irrelevant QR codes.
-- **`t`**: 6-digit numeric Transfer PIN to prevent cross-talk between multiple active transfers.
-- **`n`**: Original file name with extension.
-- **`m`**: File MIME type for correct reconstruction.
-- **`c`**: Zero-based chunk index.
-- **`l`**: Total chunk count (total frames).
-- **`d`**: 1 KB–1.5 KB slice of raw file data encoded in Base64.
-
 ---
 
-## ⚡ What Makes It Fast?
+## ⚡ Speed Modes & Controls
 
-1. **Direct HTML5 Canvas Rendering**: QR frames are drawn straight to `<canvas>` via `QRCode.toCanvas()`, eliminating image decode lag and DOM reflow overhead.
-2. **Adjustable Optical Speeds**:
-   - **⚡ Turbo (150ms / ~6.6 FPS)**: Best for modern smartphone cameras in good lighting.
-   - **Fast (250ms / 4.0 FPS)**: Recommended default setting.
-   - **Normal (350ms / ~2.8 FPS)**: Balanced for steady scanning.
-   - **Slow (500ms / 2.0 FPS)**: For older or low-light cameras.
-3. **Full Frame Expansion (⤢)**: Expand the QR code on the sender's device so the receiver can scan easily from a distance.
-4. **Playback & Frame Stepper**: Pause on any frame or manually step (`◀` / `▶`) to broadcast a single missing frame directly.
-
----
-
-## 🚀 Key Features
-
-- **100% Offline & Air-Gapped** — Zero network dependencies, zero telemetry, zero server storage.
-- **6-Digit Transfer PIN** — Clean, human-readable numeric code (e.g., `582 914`).
-- **Continuous Frame Looping** — Missed a frame during the first rotation? The sender loops automatically until all chunks are collected.
-- **Deduplication Engine** — Redundant frames are filtered in $O(1)$ time in memory.
-- **Live Progress & Haptics** — Real-time percentage, remaining chunk count, and haptic feedback.
-- **Zero Installation** — Runs in any modern mobile or desktop web browser.
+| Mode | Frame Interval | Effective FPS | Recommendation |
+| :--- | :--- | :--- | :--- |
+| **⚡ Turbo** | `150ms` | ~6.6 FPS | Modern smartphones & high-res cameras |
+| **Fast** *(Default)* | `250ms` | 4.0 FPS | General high-speed transfers |
+| **Normal** | `350ms` | ~2.8 FPS | Standard scanning speed |
+| **Slow** | `500ms` | 2.0 FPS | Low-light environments & older cameras |
 
 ---
 
@@ -153,11 +152,11 @@ classDiagram
 | ----------- | --------------------------------------- |
 | Framework   | Next.js (Pages Router, Static Export)   |
 | Language    | TypeScript                              |
-| Styling     | Modern Vanilla CSS & Glassmorphism      |
-| QR Generate | `qrcode` (Direct Canvas Renderer)       |
+| Styling     | Botanical / Organic Serif (Vanilla CSS) |
+| QR Generate | `qrcode` (Direct HTML5 Canvas Render)   |
 | QR Scan     | `jsQR` via `requestAnimationFrame`      |
 | Camera API  | `navigator.mediaDevices.getUserMedia()` |
-| File I/O    | File API, FileReader, Blob              |
+| Memory I/O  | File API, FileReader, Blob              |
 
 ---
 
@@ -170,13 +169,13 @@ classDiagram
 ### 2. Install & Run Development Server
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/frameshare.git
+git clone https://github.com/sujalkathait93-lab/frameshare.git
 cd frameshare
 
 # Install dependencies
 npm install
 
-# Start development server
+# Start local server
 npm run dev
 ```
 
@@ -187,30 +186,24 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 npm run build
 ```
 
-The production output is completely static and can be deployed anywhere (Vercel, Netlify, GitHub Pages, or local web servers).
-
-> **Note:** Camera access requires `https://` (or `http://localhost`) due to modern browser security policies.
-
 ---
 
-## 📱 Step-by-Step Usage Guide
+## 📱 Usage Guide
 
-### 📤 Sending a File (Device A)
-1. Open FrameShare on **Device A** and tap **Send File**.
-2. Select your file (`.txt`, `.jpg`, `.jpeg`, `.png` up to 20 MB).
-3. Tap **Start Transfer**.
-4. FrameShare generates a 6-digit PIN and begins streaming the QR frames.
-5. *(Optional)* Select **⚡ Turbo** or **Fast** for high transfer speeds, or tap **⤢ Expand QR** for full-screen mode.
+### 📤 Sender Flow (Device A)
+1. Tap **Send File** and select a file (`.txt`, `.jpg`, `.jpeg`, `.png`).
+2. Tap **Start Optical Transfer →**.
+3. Point the streaming QR code toward the receiver.
+4. If cancelled or completed, tap **`[ 🔁 Send Again ]`** to start a fresh transfer session with the same file.
 
-### 📥 Receiving a File (Device B)
-1. Open FrameShare on **Device B** and tap **Receive File**.
-2. Tap **Start Camera Scanner** and grant camera permissions.
-3. Aim the camera at the QR code stream on Device A.
-4. The scanner automatically captures and verifies incoming chunks.
-5. When all frames are collected, tap **💾 Save / Download File** to save the reassembled file!
+### 📥 Receiver Flow (Device B)
+1. Tap **Receive File**.
+2. **Optical Mode:** Tap **Start Camera Scanner** and point at Device A.
+3. **Manual Mode:** Switch to **Transfer PIN / Paste** tab to enter the 6-digit PIN or paste frame payloads.
+4. When 100% is reached, tap **`[ 💾 Save / Download File ]`**.
 
 ---
 
 ## 📄 License
 
-This project is open-source and built for educational and practical air-gap transfer demonstrations.
+Open-source educational and practical air-gap transfer software. Zero server storage guaranteed.
