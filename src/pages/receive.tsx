@@ -291,7 +291,7 @@ export default function ReceivePage() {
           <div className="manual-pin-card">
             <div className="scan-icon-circle">🔢</div>
             <h2>Manual <span className="italic-emphasis">Collector</span></h2>
-            <p>Enter the 6-digit Transfer PIN or paste single frame JSON.</p>
+            <p>Enter the 6-digit Transfer PIN to connect.</p>
 
             <input
               type="text"
@@ -302,21 +302,19 @@ export default function ReceivePage() {
               onChange={(e) => setManualPin(e.target.value)}
             />
 
-            <form onSubmit={handleManualFrameSubmit} style={{ width: '100%', marginTop: '1rem' }}>
-              <input
-                type="text"
-                className="pin-input-field"
-                style={{ fontSize: '0.9rem', maxWidth: '100%', letterSpacing: 'normal' }}
-                placeholder='Paste raw frame payload {"app":"FS", ...}'
-                value={manualPayload}
-                onChange={(e) => setManualPayload(e.target.value)}
-              />
-              <div className="action-buttons">
-                <button type="submit" className="btn btn-primary">
-                  Add Frame Chunk
-                </button>
-              </div>
-            </form>
+            <div className="action-buttons" style={{ marginTop: '1.5rem' }}>
+              <button
+                className="btn btn-primary btn-large"
+                onClick={() => {
+                  if (manualPin.replace(/\s/g, '').length === 6) {
+                    setReceiverStatus('CONNECTING');
+                    // Additional logic for WebRTC/WebSocket connection can go here in the future
+                  }
+                }}
+              >
+                Connect
+              </button>
+            </div>
 
             {transferId && (
               <div style={{ marginTop: '1.5rem', textAlign: 'left' }}>
